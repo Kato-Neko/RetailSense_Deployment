@@ -29,7 +29,7 @@ import numpy as np
 from io import BytesIO
 
 # Import from backend files
-from .job_manager import init_db, get_db_connection, insert_job, get_job, update_job, delete_job, get_jobs_for_user, upload_to_supabase
+from .job_manager import insert_job, get_job, update_job, delete_job, get_jobs_for_user, upload_to_supabase
 from .video_processing import validate_video_file
 from .heatmap_maker import blend_heatmap, analyze_heatmap
 from .utils import hash_password, verify_password
@@ -82,14 +82,11 @@ def allowed_file(filename, allowed_extensions):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
 def update_job_status_in_db(job_id, job):
-    conn = get_db_connection()
-    conn.execute('''
-        UPDATE jobs 
-        SET status = ?, message = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE job_id = ?
-    ''', (job['status'], job['message'], job_id))
-    conn.commit()
-    conn.close()
+    update_job(job_id, {
+        "status": job['status'],
+        "message": job['message'],
+        "updated_at": "now()"
+    })
 
 def process_video_job(job_id):
     """
@@ -176,14 +173,7 @@ def process_video_job(job_id):
         job['status'] = 'completed'
         job['message'] = 'Processing completed successfully'
         # Update database
-        conn = get_db_connection()
-        conn.execute('''
-            UPDATE jobs 
-            SET status = ?, message = ?, updated_at = CURRENT_TIMESTAMP, output_heatmap_path = ?
-            WHERE job_id = ?
-        ''', (job['status'], job['message'], output_heatmap_image_path, job_id))
-        conn.commit()
-        conn.close()
+        update_job_status_in_db(job_id, job)
 
     except Exception as e:
         if hasattr(job, 'cancelled') and job['cancelled']:
@@ -195,14 +185,7 @@ def process_video_job(job_id):
             job['message'] = f'Error during processing: {str(e)}'
         logger.error(f"Error processing job {job_id}: {str(e)}", exc_info=True)
         # Update database with error
-        conn = get_db_connection()
-        conn.execute('''
-            UPDATE jobs 
-            SET status = ?, message = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE job_id = ?
-        ''', (job['status'], job['message'], job_id))
-        conn.commit()
-        conn.close()
+        update_job_status_in_db(job_id, job)
 
 def update_job_progress(job_id, stage, progress):
     """Update job progress in both memory and database."""
@@ -210,14 +193,7 @@ def update_job_progress(job_id, stage, progress):
     job['message'] = f'{stage} ({int(progress * 100)}%)'
     
     # Update database
-    conn = get_db_connection()
-    conn.execute('''
-        UPDATE jobs 
-        SET message = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE job_id = ?
-    ''', (job['message'], job_id))
-    conn.commit()
-    conn.close()
+    update_job_status_in_db(job_id, job)
 
 def get_video_duration(video_path):
     cap = cv2.VideoCapture(video_path)
@@ -242,9 +218,7 @@ def create_heatmap_job():
             video_filename = request.form.get('videoFilename')
             current_user = get_jwt_identity()
             # Find the most recent job for this user with this video file
-            conn = get_db_connection()
-            job_row = conn.execute('''SELECT job_id FROM jobs WHERE user = ? AND input_video_name = ? ORDER BY created_at DESC LIMIT 1''', (current_user, video_filename)).fetchone()
-            conn.close()
+            job_row = get_job(current_user, video_filename)
             if not job_row:
                 logger.error("No previous upload found to reuse.")
                 return jsonify({"error": "No previous upload found to reuse."}), 400
@@ -364,20 +338,7 @@ def create_heatmap_job():
         logger.debug(f"Current user: {current_user}")
 
         # Create database entry
-        conn = get_db_connection()
-        try:
-            logger.debug("Creating database entry")
-            conn.execute('''
-                INSERT INTO jobs (job_id, user, input_video_name, input_floorplan_name, status, message, start_datetime, end_datetime)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                (job_id, current_user, video_filename, floorplan_filename, 'pending', 'Job submitted, awaiting processing.', start_datetime, end_datetime))
-            conn.commit()
-            logger.debug("Database entry created successfully")
-        except Exception as db_error:
-            logger.error(f"Database error: {str(db_error)}")
-            raise
-        finally:
-            conn.close()
+        insert_job(job_id, current_user, video_filename, floorplan_filename, 'pending', 'Job submitted, awaiting processing.', start_datetime, end_datetime)
 
         # Start processing in background thread
         processing_thread = threading.Thread(target=process_video_job, args=(job_id,))
@@ -395,19 +356,15 @@ def get_job_status(job_id):
     if job:
         return jsonify({"job_id": job_id, "status": job['status'], "message": job.get('message', '')})
     else:
-        conn = get_db_connection()
-        db_job = conn.execute("SELECT job_id, status, message FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-        conn.close()
-        if db_job:
-            return jsonify({"job_id": db_job['job_id'], "status": db_job['status'], "message": db_job['message']})
+        job_row = get_job(None, None, job_id)
+        if job_row:
+            return jsonify({"job_id": job_row['job_id'], "status": job_row['status'], "message": job_row['message']})
         else:
             return jsonify({"error": "Job not found or not authorized"}), 404
 
 @app.route('/api/heatmap_jobs/<job_id>/result/image', methods=['GET'])
 def get_heatmap_image(job_id):
-    conn = get_db_connection()
-    job_row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-    conn.close()
+    job_row = get_job(None, None, job_id)
     if not job_row or job_row['status'] != 'completed':
         return jsonify({"error": "Job not found or not completed"}), 404
 
@@ -423,9 +380,7 @@ def get_heatmap_image(job_id):
 
 @app.route('/api/heatmap_jobs/<job_id>/result/video', methods=['GET'])
 def get_processed_video(job_id):
-    conn = get_db_connection()
-    job_row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-    conn.close()
+    job_row = get_job(None, None, job_id)
     if not job_row or job_row['status'] != 'completed':
         return jsonify({"error": "Job not found or not completed"}), 404
 
@@ -438,42 +393,23 @@ def get_processed_video(job_id):
 @jwt_required()
 def get_job_history():
     current_user = get_jwt_identity()  # Get the current user's ID from the JWT
-    conn = get_db_connection()
-    history_jobs_cursor = conn.execute('''
-        SELECT job_id,
-               input_video_name,
-               input_floorplan_name,
-               status,
-               message,
-               start_datetime,
-               end_datetime,
-               created_at,
-               updated_at
-        FROM jobs WHERE user = ? ORDER BY created_at DESC
-    ''', (current_user,))
-    history_jobs = [dict(row) for row in history_jobs_cursor.fetchall()]
-    conn.close()
+    history_jobs = get_jobs_for_user(current_user)
     return jsonify(history_jobs)
 
 @app.route('/api/heatmap_jobs/<job_id>', methods=['DELETE'])
 @jwt_required()
 def delete_heatmap_job(job_id):
     try:
-        conn = get_db_connection()
-        job_row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+        job_row = get_job(None, None, job_id)
         if not job_row:
-            conn.close()
             return jsonify({"error": "Job not found"}), 404
-        # Remove from DB
-        conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
-        conn.commit()
-        conn.close()
         # Remove files (results and uploads)
         results_folder = os.path.join(RESULTS_FOLDER, job_id)
         uploads_folder = os.path.join(UPLOAD_FOLDER, job_id)
         for folder in [results_folder, uploads_folder]:
             if os.path.exists(folder):
                 shutil.rmtree(folder)
+        delete_job(job_id)
         return jsonify({"success": True, "message": "Heatmap job deleted."})
     except Exception as e:
         logger.error(f"Error deleting job {job_id}: {str(e)}", exc_info=True)
@@ -490,27 +426,23 @@ def cancel_heatmap_job(job_id):
         job['cancelled'] = True  # This flag is now checked in the object tracking loop
         logger.info(f"Job {job_id} found in memory, marked as cancelled.")
         # Also update status in DB immediately
-        conn = get_db_connection()
-        conn.execute("UPDATE jobs SET status = ?, message = ?, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?", ('cancelled', 'Job was cancelled by user.', job_id))
-        conn.commit()
-        conn.close()
+        update_job_status_in_db(job_id, job)
         logger.info(f"Job {job_id} status updated to 'cancelled' in DB (in-memory case).")
         return jsonify({"success": True, "message": "Job cancelled."})
     # If not in memory, try to cancel in the database
-    conn = get_db_connection()
-    job_row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    job_row = get_job(None, None, job_id)
     if not job_row:
-        conn.close()
         logger.error(f"Cancel failed: Job {job_id} not found in DB.")
         return jsonify({"error": "Job not found"}), 404
     if job_row['status'] in ('completed', 'cancelled', 'error'):
-        conn.close()
         logger.info(f"Job {job_id} already finished with status {job_row['status']}.")
         return jsonify({"success": True, "message": f"Job already {job_row['status']}."})
     # Update status in DB
-    conn.execute("UPDATE jobs SET status = ?, message = ?, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?", ('cancelled', 'Job was cancelled by user.', job_id))
-    conn.commit()
-    conn.close()
+    update_job_status_in_db(job_id, {
+        "status": 'cancelled',
+        "message": 'Job was cancelled by user.',
+        "updated_at": "now()"
+    })
     logger.info(f"Job {job_id} status updated to 'cancelled' in DB (DB-only case).")
     return jsonify({"success": True, "message": "Job cancelled in DB."})
 
@@ -574,9 +506,7 @@ def get_detections_from_json(job_id):
 @jwt_required()
 def export_heatmap_csv(job_id):
     try:
-        conn = get_db_connection()
-        job_row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-        conn.close()
+        job_row = get_job(None, None, job_id)
         
         if not job_row:
             logger.error(f"Job {job_id} not found in database")
@@ -701,9 +631,7 @@ def export_heatmap_pdf(job_id):
         end_time = request.args.get('end_time', type=float)
 
         # Get job data from database
-        conn = get_db_connection()
-        job_row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-        conn.close()
+        job_row = get_job(None, None, job_id)
         
         if not job_row:
             return jsonify({'error': 'Job not found'}), 404
@@ -821,9 +749,7 @@ def export_heatmap_pdf(job_id):
 @app.route('/api/heatmap_jobs/<job_id>/analysis', methods=['GET'])
 @jwt_required()
 def get_heatmap_analysis(job_id):
-    conn = get_db_connection()
-    job_row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-    conn.close()
+    job_row = get_job(None, None, job_id)
     if not job_row or job_row['status'] != 'completed':
         return jsonify({"error": "Job not found or not completed"}), 404
 
@@ -860,9 +786,7 @@ def get_heatmap_analysis(job_id):
 def run_custom_heatmap_job(job_id, start_time, end_time):
     try:
         # Fetch job info from DB
-        conn = get_db_connection()
-        job_row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-        conn.close()
+        job_row = get_job(None, None, job_id)
         if not job_row or job_row['status'] != 'completed':
             custom_heatmap_progress[job_id] = 1.0
             return
@@ -954,9 +878,7 @@ def get_custom_heatmap_analysis(job_id):
         area = request.args.get('area', 'all')
 
         # Get job data from database
-        conn = get_db_connection()
-        job_row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-        conn.close()
+        job_row = get_job(None, None, job_id)
         
         if not job_row:
             return jsonify({'error': 'Job not found'}), 404
@@ -1033,9 +955,7 @@ def get_job_time_range(job_id):
     API endpoint to return the start and end date/time for a given job.
     Returns start_date, end_date, start_time, end_time as separate fields for easy frontend restoration.
     """
-    conn = get_db_connection()
-    job_row = conn.execute("SELECT start_datetime, end_datetime FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
-    conn.close()
+    job_row = get_job(None, None, job_id)
     if not job_row:
         return jsonify({"error": "Job not found"}), 404
     # Parse the datetime strings
@@ -1062,26 +982,5 @@ def get_job_time_range(job_id):
         "end_time": end_time
     })
 
-# On backend startup, clean up orphaned jobs left as 'pending' or 'processing' if not running in memory
-
-def cleanup_orphaned_jobs():
-    conn = get_db_connection()
-    # Find jobs that are not completed/cancelled/errored
-    orphaned = conn.execute(
-        "SELECT job_id FROM jobs WHERE status IN ('pending', 'processing')"
-    ).fetchall()
-    for row in orphaned:
-        job_id = row['job_id']
-        # If job is not in memory (not running), mark as error
-        if job_id not in jobs:
-            conn.execute(
-                "UPDATE jobs SET status = ?, message = ?, updated_at = CURRENT_TIMESTAMP WHERE job_id = ?",
-                ('error', 'Job was interrupted by server shutdown.', job_id)
-            )
-    conn.commit()
-    conn.close()
-
 if __name__ == '__main__':
-    init_db()
-    cleanup_orphaned_jobs()  # Clean up jobs on startup
     app.run(host='0.0.0.0', port=5000, debug=True)
