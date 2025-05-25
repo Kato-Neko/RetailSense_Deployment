@@ -29,12 +29,12 @@ import numpy as np
 from io import BytesIO
 
 # Import from backend files
-from job_manager import init_db, get_db_connection, insert_job, get_job, update_job, delete_job, get_jobs_for_user, upload_to_supabase
-from video_processing import validate_video_file
-from heatmap_maker import blend_heatmap, analyze_heatmap
-from utils import hash_password, verify_password
-from object_tracking import detect_and_track
-from auth import auth_bp 
+from .job_manager import init_db, get_db_connection, insert_job, get_job, update_job, delete_job, get_jobs_for_user, upload_to_supabase
+from .video_processing import validate_video_file
+from .heatmap_maker import blend_heatmap, analyze_heatmap
+from .utils import hash_password, verify_password
+from .object_tracking import detect_and_track
+from .auth import auth_bp 
 
 # Load environment variables from .env file
 load_dotenv()
