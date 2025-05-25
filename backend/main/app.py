@@ -29,7 +29,7 @@ import numpy as np
 from io import BytesIO
 
 # Import from backend files
-from job_manager import init_db, get_db_connection
+from job_manager import init_db, get_db_connection, insert_job, get_job, update_job, delete_job, get_jobs_for_user, upload_to_supabase
 from video_processing import validate_video_file
 from heatmap_maker import blend_heatmap, analyze_heatmap
 from utils import hash_password, verify_password
@@ -141,6 +141,7 @@ def process_video_job(job_id):
         detections_path = os.path.join(RESULTS_FOLDER, job_id, 'detections.json')
         with open(detections_path, 'w') as f:
             json.dump({"fps": fps, "detections": detections}, f)
+        upload_to_supabase(job_id, detections_path, "json")
 
         # For testing: use static points from Points/floorplan_points.txt
         points = [[768, 204], [690, 200], [655, 305], [793, 309]]
@@ -161,6 +162,7 @@ def process_video_job(job_id):
             output_video_path,
             video_path
         )
+        upload_to_supabase(job_id, output_heatmap_image_path, "jpg")
 
         # Check for cancellation after heatmap generation
         if job.get('cancelled'):
@@ -897,6 +899,8 @@ def run_custom_heatmap_job(job_id, start_time, end_time):
             os.path.join(UPLOAD_FOLDER, job_id, job_row['input_video_name']),
             progress_callback=progress_callback
         )
+        if os.path.exists(custom_heatmap_path):
+            upload_to_supabase(job_id, custom_heatmap_path, "jpg")
         custom_heatmap_progress[job_id] = 1.0
     except Exception as e:
         custom_heatmap_progress[job_id] = 1.0

@@ -1,46 +1,74 @@
 """
 job_manager.py
-Handles job queueing, status, and database management for the backend.
+Handles job queueing, status, and database management for the backend using Supabase.
 """
 
 import os
-import sqlite3
-import datetime
 import logging
+from supabase import create_client, Client
 
 logger = logging.getLogger(__name__)
 
-DATABASE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../heatmap_jobs.db'))
+# Initialize Supabase client
+url = os.getenv("SUPABASE_URL")
+key = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(url, key)
 
-def get_db_connection():
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def insert_job(job_data):
+    logger.debug("Inserting job into Supabase")
+    response = supabase.table("jobs").insert(job_data).execute()
+    if response.error:
+        logger.error(f"Error inserting job: {response.error}")
+    return response
 
-def init_db():
-    logger.debug("Initializing database")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Create jobs table with user field
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS jobs (
-            job_id TEXT PRIMARY KEY,
-            user TEXT NULL,
-            input_video_name TEXT,
-            input_floorplan_name TEXT,
-            output_heatmap_path TEXT,
-            output_video_path TEXT,
-            status TEXT NOT NULL,
-            message TEXT,
-            start_datetime TIMESTAMP,
-            end_datetime TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+def get_job(job_id):
+    logger.debug(f"Fetching job {job_id} from Supabase")
+    response = supabase.table("jobs").select("*").eq("job_id", job_id).single().execute()
+    if response.error:
+        logger.error(f"Error fetching job: {response.error}")
+    return response.data
+
+def update_job(job_id, update_data):
+    logger.debug(f"Updating job {job_id} in Supabase")
+    response = supabase.table("jobs").update(update_data).eq("job_id", job_id).execute()
+    if response.error:
+        logger.error(f"Error updating job: {response.error}")
+    return response
+
+def delete_job(job_id):
+    logger.debug(f"Deleting job {job_id} from Supabase")
+    response = supabase.table("jobs").delete().eq("job_id", job_id).execute()
+    if response.error:
+        logger.error(f"Error deleting job: {response.error}")
+    return response
+
+def get_jobs_for_user(user):
+    logger.debug(f"Fetching jobs for user {user} from Supabase")
+    response = supabase.table("jobs").select("*").eq("user", user).order("created_at", desc=True).execute()
+    if response.error:
+        logger.error(f"Error fetching jobs for user: {response.error}")
+    return response.data
+
+def upload_to_supabase(job_id, local_file_path, file_type):
+    """
+    Uploads a file to Supabase Storage under the given job_id folder.
+    file_type: 'jpg' or 'json'
+    """
+    bucket_name = "projectresults"
+    file_name = os.path.basename(local_file_path)
+    storage_path = f"{job_id}/{file_name}"
+
+    with open(local_file_path, "rb") as f:
+        data = f.read()
+        response = supabase.storage.from_(bucket_name).upload(
+            storage_path, data, {"content-type": "image/jpeg" if file_type == "jpg" else "application/json"}
         )
-    ''')
-    conn.commit()
-    conn.close()
-    logger.debug("Database initialization complete")
+        logger.info(f"Upload response: {response}")
+        return response
 
-# Add more job/database utilities as needed 
+def get_signed_url(job_id, file_name, expires_in=3600):
+    bucket_name = "projectresults"
+    storage_path = f"{job_id}/{file_name}"
+    response = supabase.storage.from_(bucket_name).create_signed_url(storage_path, expires_in)
+    logger.info(f"Signed URL response: {response}")
+    return response 

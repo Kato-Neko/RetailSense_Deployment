@@ -13,3 +13,4 @@ supabase==2.15.1
 python-dotenv>=0.20.0
 gunicorn>=21.2.0
 reportlab>=3.0.0
+supabase>=2.0.0
