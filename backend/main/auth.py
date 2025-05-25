@@ -5,7 +5,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from supabase import create_client
 import logging
-from utils import hash_password  # Assuming hash_password is in utils.py
+from .utils import hash_password
 from dotenv import load_dotenv
 import random
 import string
