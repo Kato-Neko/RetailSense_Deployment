@@ -14,9 +14,9 @@ url = os.getenv("SUPABASE_URL")
 key = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(url, key)
 
-def insert_job(job_data):
+def insert_job(*args, **kwargs):
     logger.debug("Inserting job into Supabase")
-    response = supabase.table("jobs").insert(job_data).execute()
+    response = supabase.table("jobs").insert(kwargs).execute()
     if response.error:
         logger.error(f"Error inserting job: {response.error}")
     return response
